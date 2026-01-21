@@ -483,15 +483,11 @@ def reload_accounts(
     session_cache_ttl_seconds: int,
     global_stats: dict
 ) -> MultiAccountManager:
-    """重新加载账户配置（保留现有账户的运行时状态）"""
-    # 保存现有账户的运行时状态
-    old_states = {}
+    """重新加载账户配置（重置所有错误状态，仅保留统计数据）"""
+    # 仅保存统计数据（conversation_count）
+    old_stats = {}
     for account_id, account_mgr in multi_account_mgr.accounts.items():
-        old_states[account_id] = {
-            "is_available": account_mgr.is_available,
-            "last_error_time": account_mgr.last_error_time,
-            "last_429_time": account_mgr.last_429_time,
-            "error_count": account_mgr.error_count,
+        old_stats[account_id] = {
             "conversation_count": account_mgr.conversation_count
         }
 
@@ -506,18 +502,20 @@ def reload_accounts(
         global_stats
     )
 
-    # 恢复现有账户的运行时状态
-    for account_id, state in old_states.items():
+    # 仅恢复统计数据，错误状态全部重置
+    for account_id, stats in old_stats.items():
         if account_id in new_mgr.accounts:
             account_mgr = new_mgr.accounts[account_id]
-            account_mgr.is_available = state["is_available"]
-            account_mgr.last_error_time = state["last_error_time"]
-            account_mgr.last_429_time = state["last_429_time"]
-            account_mgr.error_count = state["error_count"]
-            account_mgr.conversation_count = state["conversation_count"]
-            logger.debug(f"[CONFIG] 账户 {account_id} 运行时状态已恢复")
+            account_mgr.conversation_count = stats["conversation_count"]
+            # 确保错误状态已重置（虽然load_multi_account_config已经初始化，但显式确认）
+            account_mgr.is_available = True
+            account_mgr.last_error_time = 0.0
+            account_mgr.last_429_time = 0.0
+            account_mgr.error_count = 0
+            account_mgr.session_usage_count = 0
+            logger.debug(f"[CONFIG] 账户 {account_id} 已刷新，错误状态已重置")
 
-    logger.info(f"[CONFIG] 配置已重载，当前账户数: {len(new_mgr.accounts)}")
+    logger.info(f"[CONFIG] 配置已重载，当前账户数: {len(new_mgr.accounts)}，所有错误状态已重置")
     return new_mgr
 
 

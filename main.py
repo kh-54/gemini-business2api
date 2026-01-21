@@ -1655,30 +1655,32 @@ async def chat_impl(
                 break
 
             except (httpx.HTTPError, ssl.SSLError, HTTPException) as e:
-                status_code = e.status_code if isinstance(e, HTTPException) else None
+                # 提取错误信息
+                is_http_exception = isinstance(e, HTTPException)
+                status_code = e.status_code if is_http_exception else None
                 error_detail = (
                     f"HTTP {e.status_code}: {e.detail}"
-                    if isinstance(e, HTTPException)
+                    if is_http_exception
                     else f"{type(e).__name__}: {str(e)[:200]}"
                 )
+
                 # 记录当前失败的账户
                 failed_accounts.add(account_manager.config.account_id)
 
                 # 记录账号池状态（请求失败）
-                status_code = e.status_code if isinstance(e, HTTPException) else None
-
                 uptime_tracker.record_request("account_pool", False, status_code=status_code)
 
-                # 检查是否为429错误（Rate Limit）
-                is_rate_limit = isinstance(e, HTTPException) and e.status_code == 429
-
-                # 429错误单独处理（不增加error_count，只设置冷却时间）
-                if is_rate_limit:
+                # 根据错误类型决定是否计入error_count
+                # 429限流：临时禁用，冷却后自动恢复
+                if is_http_exception and status_code == 429:
                     account_manager.last_429_time = time.time()
                     account_manager.is_available = False  # 临时禁用，冷却期后自动恢复
                     logger.warning(f"[ACCOUNT] [{account_manager.config.account_id}] [req_{request_id}] 遇到429限流，账户将休息{RATE_LIMIT_COOLDOWN_SECONDS}秒后自动恢复")
+                # 400参数错误：不计入error_count，客户端问题不应封禁账户
+                elif is_http_exception and status_code == 400:
+                    logger.warning(f"[ACCOUNT] [{account_manager.config.account_id}] [req_{request_id}] 参数错误(400)，不计入失败次数: {e.detail}")
+                # 其他错误：计入error_count
                 else:
-                    # 非429错误才增加失败计数
                     account_manager.last_error_time = time.time()
                     account_manager.error_count += 1
                     if account_manager.error_count >= ACCOUNT_FAILURE_THRESHOLD:
@@ -1689,16 +1691,17 @@ async def chat_impl(
 
                 # 详细记录错误信息
                 error_type = type(e).__name__
-                error_detail = str(e)
 
                 # 特殊处理HTTPException，提取状态码和详情
-                if isinstance(e, HTTPException):
-                    if is_rate_limit:
+                if is_http_exception:
+                    if status_code == 429:
                         logger.error(f"[CHAT] [{account_manager.config.account_id}] [req_{request_id}] 遇到429限流错误，账户将休息{RATE_LIMIT_COOLDOWN_SECONDS}秒")
+                    elif status_code == 400:
+                        logger.error(f"[CHAT] [{account_manager.config.account_id}] [req_{request_id}] HTTP 400参数错误（不计入失败次数）: {e.detail}")
                     else:
                         logger.error(f"[CHAT] [{account_manager.config.account_id}] [req_{request_id}] HTTP错误 {e.status_code}: {e.detail}")
                 else:
-                    logger.error(f"[CHAT] [{account_manager.config.account_id}] [req_{request_id}] {error_type}: {error_detail}")
+                    logger.error(f"[CHAT] [{account_manager.config.account_id}] [req_{request_id}] {error_type}: {str(e)[:200]}")
 
                 # 检查是否还能继续重试
                 if retry_count <= max_retries:
